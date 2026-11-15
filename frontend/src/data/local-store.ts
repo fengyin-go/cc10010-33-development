@@ -20,6 +20,7 @@ function readStorage(): Record<string, EntryRow[]> {
   }
   try {
     const parsed = JSON.parse(raw) as Record<string, EntryRow[]>
+    // 示例数据后补的模块/行也要能出现在老浏览器存储里：缺的模块用种子补齐。
     return { ...fallback, ...parsed }
   } catch {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(fallback))
@@ -42,10 +43,17 @@ export function listRows(key: string): EntryRow[] {
 
 export function saveRows(key: string, rows: EntryRow[]): void {
   const next = { ...allRows(), [key]: rows }
-  cache = next
+  // 先写持久层再更新缓存：写失败时缓存保持原值，调用方的回退逻辑才能和磁盘一致。
   if (typeof window !== 'undefined' && window.localStorage) {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
   }
+  cache = next
+}
+
+/** 重新读取持久层：另一个标签页可能已经写入，结算前必须看到最新数据。 */
+export function refreshRows(): Record<string, EntryRow[]> {
+  cache = readStorage()
+  return cache
 }
 
 export function resetRows(key: string): EntryRow[] {

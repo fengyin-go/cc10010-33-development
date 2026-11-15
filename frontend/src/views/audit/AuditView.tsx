@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { downloadEntries, listEntries, moduleMeta, runAction as applyAction } from '@/api/local-service'
+import { isoWeekOf } from '@/api/settlement'
 import type { EntryRow } from '@/data/types'
 
 const meta = moduleMeta('audit')
@@ -12,7 +13,9 @@ const columns = [
   "操作来源",
   "执行时间",
   "影响行数",
-  "回滚能力"
+  "回滚能力",
+  "结算批次",
+  "周次"
 ]
 const actions = [
   "提交审核",
@@ -41,11 +44,12 @@ const stats = [
 ]
 
 export default function AuditView() {
-  const [rows, setRows] = useState<EntryRow[]>([])
-  const [total, setTotal] = useState(0)
-  const [errorMessage, setErrorMessage] = useState('')
   const [filters, setFilters] = useState<Record<string, string>>({})
-  const filterFields = useMemo(() => columns.slice(0, 3), [])
+  const initialAudit = listEntries(meta.key, {})
+  const [rows, setRows] = useState<EntryRow[]>(initialAudit.items)
+  const [total, setTotal] = useState(initialAudit.total)
+  const [errorMessage, setErrorMessage] = useState('')
+  const filterFields = useMemo(() => ["日志编号", "操作类型", "周次"], [])
 
   const reload = useCallback(() => {
     setErrorMessage('')
@@ -72,6 +76,13 @@ export default function AuditView() {
     reload()
   }
 
+  const currentWeek = useMemo(() => isoWeekOf(new Date()), [])
+  // 本周结算结果：只取结算动作产生的审计明细，其他业务日志不计入。
+  const weekSettlementRows = useMemo(
+    () => rows.filter((row) => String(row['周次'] ?? '') === currentWeek && String(row['操作类型'] ?? '') === '结算确认'),
+    [rows, currentWeek],
+  )
+
   return (
     <section className="page" data-module="audit">
       <header className="page-head">
@@ -96,7 +107,47 @@ export default function AuditView() {
             <strong className="stat-value">{item.value}</strong>
           </article>
         ))}
+        <article className="stat-card" data-testid="audit-week-stats">
+          <span className="stat-label">本周结算明细（{currentWeek}）</span>
+          <strong className="stat-value">{weekSettlementRows.length}</strong>
+        </article>
       </div>
+
+      <section className="panel" data-testid="audit-week-panel">
+        <header className="panel-head">
+          <h3>本周结算结果</h3>
+          <span className="panel-hint">结算动作的审计明细按周归档，记录本周结算的资源汇总</span>
+        </header>
+        <table className="data-table compact">
+          <thead>
+            <tr>
+              <th>日志编号</th>
+              <th>结算周期</th>
+              <th>结算批次</th>
+              <th>操作来源</th>
+              <th>执行时间</th>
+              <th>操作详情</th>
+            </tr>
+          </thead>
+          <tbody>
+            {weekSettlementRows.map((row) => (
+              <tr key={String(row.id)}>
+                <td>{row['日志编号']}</td>
+                <td>{row['结算周期']}</td>
+                <td>{row['结算批次']}</td>
+                <td>{row['操作来源']}</td>
+                <td>{row['执行时间']}</td>
+                <td>{row['操作详情']}</td>
+              </tr>
+            ))}
+            {weekSettlementRows.length === 0 && (
+              <tr>
+                <td className="empty-state" colSpan={6}>本周暂无结算结果</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </section>
 
       <p className="status-legend">
         {statuses.map((status: string) => (

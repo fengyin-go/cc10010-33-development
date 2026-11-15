@@ -1,9 +1,27 @@
 import { MODULE_BY_KEY } from '@/data/modules'
 import { allRows, listRows, resetRows, saveRows } from '@/data/local-store'
-import type { ActionResult, EntryRow, ModuleMeta, OverviewResult, PageResult } from '@/data/types'
+import { canSettle } from '@/data/permissions'
+import { resetSettlements } from '@/data/settlement-store'
+import type { ActionActor, ActionResult, EntryRow, ModuleMeta, OverviewResult, PageResult } from '@/data/types'
+import { settlePeriod } from './settlement'
 
 // 会写进数据的「往回走」动作：命中就把这条记录标成异常态，看板上能一眼看出来。
 const NEGATIVE_ACTIONS = ['撤销', '作废', '拒绝', '驳回', '停用', '忽略', '下线', '回滚']
+
+// 只有计算引擎负责人能执行的动作：资源计量的结算确认是其中之一。
+const SETTLEMENT_ACTIONS = ['结算确认']
+// 计量记录的整体写权限：除结算外，提交汇总/归档同样只对计算引擎负责人开放，其他角色只读。
+const METERING_MODULE = 'resource'
+
+export function canRunAction(meta: ModuleMeta, action: string, actor?: ActionActor): boolean {
+  if (meta.key === METERING_MODULE) {
+    return canSettle(actor)
+  }
+  if (SETTLEMENT_ACTIONS.includes(action)) {
+    return canSettle(actor)
+  }
+  return true
+}
 
 export function moduleMeta(key: string): ModuleMeta {
   const meta = MODULE_BY_KEY.get(key)
@@ -28,8 +46,11 @@ export function listEntries(key: string, filters: Record<string, string> = {}): 
   return { items: matched, total: matched.length, page: 1, size: matched.length }
 }
 
-export function runAction(key: string, id: number, action: string): ActionResult {
+export function runAction(key: string, id: number, action: string, actor?: ActionActor): ActionResult {
   const meta = moduleMeta(key)
+  if (!canRunAction(meta, action, actor)) {
+    return { ok: false, message: '无权操作：只有计算引擎负责人可以结算计量记录，其他角色只读' }
+  }
   const target = meta.actionTargets[action]
   if (!target) {
     return { ok: false, message: `${meta.entity}没有登记「${action}」这个动作` }
@@ -38,6 +59,11 @@ export function runAction(key: string, id: number, action: string): ActionResult
   const index = rows.findIndex((row) => Number(row.id) === id)
   if (index < 0) {
     return { ok: false, message: `没有找到编号为 ${id} 的${meta.entity}` }
+  }
+  if (key === METERING_MODULE && action === '结算确认') {
+    // 资源计量的结算按整周期走：单行结算会把同一周期的其他记录漏掉，无法形成可复核汇总。
+    const outcome = settlePeriod(String(rows[index]['计费周期'] ?? ''), actor)
+    return { ok: outcome.ok, message: outcome.message }
   }
   const current = String(rows[index].status)
   if (current === target) {
@@ -58,6 +84,10 @@ export function runAction(key: string, id: number, action: string): ActionResult
 
 export function resetModule(key: string): PageResult {
   resetRows(key)
+  if (key === METERING_MODULE) {
+    // 重置计量记录必须连结算快照一起清，否则历史批次会把周期永久锁死。
+    resetSettlements()
+  }
   return listEntries(key)
 }
 
